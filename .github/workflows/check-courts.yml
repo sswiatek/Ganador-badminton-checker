@@ -2,9 +2,8 @@ name: Sprawdzenie kortow Ganador
 
 on:
   workflow_dispatch:
-
   schedule:
-    - cron: "3-58/5 * * * *"
+    - cron: "*/3 * * * *"
 
 permissions:
   contents: write
