@@ -301,15 +301,10 @@ def check_availability():
             timeout=60000
         )
 
-        page.wait_for_timeout(4000)
-
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            print(
-                "Strona nie osiągnęła networkidle. "
-                "Kontynuuję po załadowaniu DOM."
-            )
+        page.wait_for_selector(
+            ".i-table-h-event-row",
+            timeout=30000
+        )
 
         page.screenshot(
             path=str(SCREENSHOT_FILE),
@@ -321,60 +316,52 @@ def check_availability():
             encoding="utf-8"
         )
 
-        table = find_schedule_table(page)
-        rows = table.locator("tr")
+        court_names = page.locator(".i-table-h-event-caption")
+        court_rows = page.locator(".i-table-h-event-row")
 
-        target_column = find_time_column(rows, TARGET_TIME)
-        reference_column = find_time_column(rows, REFERENCE_TIME)
+        print(f"Znaleziono kortów: {court_rows.count()}")
 
-        reference_cell = find_court_cell(
-            rows,
-            REFERENCE_COURT,
-            reference_column
-        )
-
-        reference_data = get_cell_data(reference_cell)
-
-        print(
-            f"Wzorzec dostępności: "
-            f"{REFERENCE_COURT} o {REFERENCE_TIME}"
-        )
-        print(
-            json.dumps(
-                reference_data,
-                indent=2,
-                ensure_ascii=False
+        if court_rows.count() != court_names.count():
+            raise RuntimeError(
+                f"Liczba nazw kortów ({court_names.count()}) "
+                f"nie zgadza się z liczbą wierszy ({court_rows.count()})."
             )
-        )
 
         available_courts = []
 
-        for court in COURTS:
-            target_cell = find_court_cell(
-                rows,
-                court,
-                target_column
+        for i in range(court_rows.count()):
+
+            court_name = court_names.nth(i).inner_text().strip()
+            row = court_rows.nth(i)
+
+            if court_name not in COURTS:
+                continue
+
+            slot = row.locator(
+                '.i-table-h-event-body[data-start="1200"]'
             )
 
-            target_data = get_cell_data(target_cell)
-            available = looks_like_reference(
-                target_data,
-                reference_data
-            )
+            if slot.count() != 1:
+                print(
+                    f"UWAGA: {court_name}: "
+                    f"znaleziono {slot.count()} pól dla 20:00"
+                )
+                continue
 
-            status = "🟢 WOLNY" if available else "🔴 ZAJĘTY"
-            print(f"{court} o {TARGET_TIME}: {status}")
+            classes = slot.get_attribute("class") or ""
+
+            is_available = "green" in classes.split()
+
+            if is_available:
+                status = "🟢 WOLNY"
+                available_courts.append(court_name)
+            else:
+                status = "🔴 ZAJĘTY"
 
             print(
-                json.dumps(
-                    target_data,
-                    indent=2,
-                    ensure_ascii=False
-                )
+                f"{court_name} o 20:00: "
+                f"{status} [{classes}]"
             )
-
-            if available:
-                available_courts.append(court)
 
         browser.close()
 
