@@ -1,4 +1,6 @@
 {
-  "available_courts": [],
-  "last_check": "2026-11-01T22:06:02.227424+01:00"
+  "available_courts": [
+    "BAD.4"
+  ],
+  "last_check": "2026-11-01T22:11:15.657444+01:00"
 }
