@@ -402,7 +402,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        send_email(["TEST BAD.2"])
+        main()
     except Exception as error:
         print(f"BŁĄD: {error}", file=sys.stderr)
         raise
