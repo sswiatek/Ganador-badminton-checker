@@ -1,0 +1,16 @@
+name: Scheduler Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  scheduler-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Show scheduler time
+        run: |
+          echo "GitHub scheduler works!"
+          date -u
