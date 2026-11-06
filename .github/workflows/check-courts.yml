@@ -1,6 +1,6 @@
 name: Sprawdzenie kortow Ganador
 
-on:
+off:
   workflow_dispatch:
   schedule:
     - cron: "*/3 * * * *"
