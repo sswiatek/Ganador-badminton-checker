@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 URL = (
     "https://ganadorsport.pl/rezerwacja-online/"
-    "index.php?s=grafik_zajec_korty_badminton&date=2026-11-02"
+    "index.php?s=grafik_zajec_korty_badminton&date=2026-11-09"
 )
 
 TARGET_TIME = "20:00"
@@ -95,7 +95,7 @@ def send_email(available_courts):
 
     message = EmailMessage()
     message["Subject"] = (
-        f"🏸 Wolny kort Ganador: {courts_text}, 02.11.2026 o 20:00"
+        f"🏸 Wolny kort Ganador: {courts_text}, 09.11.2026 o 20:00"
     )
     message["From"] = email_from
     message["To"] = email_to
@@ -103,7 +103,7 @@ def send_email(available_courts):
     message.set_content(
         f"""Dostępny jest kort do badmintona w Ganador Sport.
 
-Data: 02.11.2026
+Data: 09.11.2026
 Godzina: 20:00
 Wolne korty: {courts_text}
 Sprawdzono: {now.strftime("%d.%m.%Y %H:%M:%S")}
