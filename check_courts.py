@@ -295,28 +295,51 @@ def check_availability():
 
         print(f"Otwieram stronę: {URL}")
 
-        page.goto(
-            URL,
-            wait_until="domcontentloaded",
-            timeout=60000,
-        )
+       response = page.goto(
+    URL,
+    wait_until="domcontentloaded",
+    timeout=60000,
+)
 
-        # Czekamy na rzeczywistą zawartość grafiku zamiast
-        # na starą klasę CSS Ganadora.
-        page.get_by_text(REFERENCE_COURT, exact=True).wait_for(
-            state="visible",
-            timeout=30000,
-        )
+print(
+    "HTTP status:",
+    response.status if response else "brak odpowiedzi",
+)
+print("Końcowy URL:", page.url)
+print("Tytuł strony:", page.title())
 
-        page.screenshot(
-            path=str(SCREENSHOT_FILE),
-            full_page=True,
-        )
+# Dajemy stronie czas na uruchomienie JavaScriptu i AJAX.
+page.wait_for_timeout(10000)
 
-        HTML_FILE.write_text(
-            page.content(),
-            encoding="utf-8",
-        )
+# Diagnostyka musi zostać zapisana przed sprawdzaniem grafiku.
+page.screenshot(
+    path=str(SCREENSHOT_FILE),
+    full_page=True,
+)
+
+HTML_FILE.write_text(
+    page.content(),
+    encoding="utf-8",
+)
+
+body_text = page.locator("body").inner_text()
+print("Początek treści strony:")
+print(body_text[:3000])
+
+if "BAD.2" not in body_text:
+    raise RuntimeError(
+        "Strona otworzyła się, ale GitHub Runner nie otrzymał "
+        "grafiku kortów. Sprawdź ganador-status.png oraz "
+        "ganador-page.html w artefaktach workflow."
+    )
+
+page.get_by_text(
+    REFERENCE_COURT,
+    exact=True,
+).first.wait_for(
+    state="attached",
+    timeout=10000,
+)
 
         # Znajdź tabelę zawierającą grafik badmintonowy.
         table = find_schedule_table(page)
