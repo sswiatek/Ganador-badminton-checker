@@ -292,10 +292,9 @@ def check_availability():
             locale="pl-PL",
             timezone_id="Europe/Warsaw",
         )
-
         print(f"Otwieram stronę: {URL}")
 
-       response = page.goto(
+        response = page.goto(
     URL,
     wait_until="domcontentloaded",
     timeout=60000,
