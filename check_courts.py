@@ -298,70 +298,91 @@ def check_availability():
         page.goto(
             URL,
             wait_until="domcontentloaded",
-            timeout=60000
+            timeout=60000,
         )
 
-        page.wait_for_selector(
-            ".i-table-h-event-row",
-            timeout=30000
+        # Czekamy na rzeczywistą zawartość grafiku zamiast
+        # na starą klasę CSS Ganadora.
+        page.get_by_text(REFERENCE_COURT, exact=True).wait_for(
+            state="visible",
+            timeout=30000,
         )
 
         page.screenshot(
             path=str(SCREENSHOT_FILE),
-            full_page=True
+            full_page=True,
         )
 
         HTML_FILE.write_text(
             page.content(),
-            encoding="utf-8"
+            encoding="utf-8",
         )
 
-        court_names = page.locator(".i-table-h-event-caption")
-        court_rows = page.locator(".i-table-h-event-row")
+        # Znajdź tabelę zawierającą grafik badmintonowy.
+        table = find_schedule_table(page)
+        rows = table.locator("tr")
 
-        print(f"Znaleziono kortów: {court_rows.count()}")
+        print(f"Znaleziono wierszy tabeli: {rows.count()}")
 
-        if court_rows.count() != court_names.count():
-            raise RuntimeError(
-                f"Liczba nazw kortów ({court_names.count()}) "
-                f"nie zgadza się z liczbą wierszy ({court_rows.count()})."
-            )
+        # Ustal kolumnę 20:00 oraz kolumnę referencyjną 22:00.
+        target_column = find_time_column(rows, TARGET_TIME)
+        reference_column = find_time_column(rows, REFERENCE_TIME)
+
+        print(
+            f"Kolumna {TARGET_TIME}: {target_column}, "
+            f"kolumna referencyjna {REFERENCE_TIME}: "
+            f"{reference_column}"
+        )
+
+        # Pobierz referencyjny slot BAD.2 o 22:00.
+        reference_cell = find_court_cell(
+            rows,
+            REFERENCE_COURT,
+            reference_column,
+        )
+
+        reference_data = get_cell_data(reference_cell)
+
+        print(
+            f"Slot referencyjny "
+            f"{REFERENCE_COURT} {REFERENCE_TIME}: "
+            f"{reference_data}"
+        )
 
         available_courts = []
 
-        for i in range(court_rows.count()):
-
-            court_name = court_names.nth(i).inner_text().strip()
-            row = court_rows.nth(i)
-
-            if court_name not in COURTS:
-                continue
-
-            slot = row.locator(
-                '.i-table-h-event-body[data-start="1200"]'
-            )
-
-            if slot.count() != 1:
-                print(
-                    f"UWAGA: {court_name}: "
-                    f"znaleziono {slot.count()} pól dla 20:00"
+        for court_name in COURTS:
+            try:
+                cell = find_court_cell(
+                    rows,
+                    court_name,
+                    target_column,
                 )
-                continue
 
-            classes = slot.get_attribute("class") or ""
+                cell_data = get_cell_data(cell)
 
-            is_available = "green" in classes.split()
+                is_available = looks_like_reference(
+                    cell_data,
+                    reference_data,
+                )
 
-            if is_available:
-                status = "🟢 WOLNY"
-                available_courts.append(court_name)
-            else:
-                status = "🔴 ZAJĘTY"
+                if is_available:
+                    status = "🟢 WOLNY"
+                    available_courts.append(court_name)
+                else:
+                    status = "🔴 ZAJĘTY"
 
-            print(
-                f"{court_name} o 20:00: "
-                f"{status} [{classes}]"
-            )
+                print(
+                    f"{court_name} o {TARGET_TIME}: "
+                    f"{status} "
+                    f"[class={cell_data['className']}]"
+                )
+
+            except Exception as error:
+                print(
+                    f"UWAGA: nie udało się sprawdzić "
+                    f"{court_name}: {error}"
+                )
 
         browser.close()
 
