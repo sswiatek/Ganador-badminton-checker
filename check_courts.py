@@ -282,7 +282,6 @@ def looks_like_reference(candidate, reference):
 
     return False
 
-
 def check_availability():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -292,124 +291,181 @@ def check_availability():
             locale="pl-PL",
             timezone_id="Europe/Warsaw",
         )
+
         print(f"Otwieram stronę: {URL}")
 
-        response = page.goto(
-    URL,
-    wait_until="domcontentloaded",
-    timeout=60000,
-)
+        try:
+            response = page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
 
-print(
-    "HTTP status:",
-    response.status if response else "brak odpowiedzi",
-)
-print("Końcowy URL:", page.url)
-print("Tytuł strony:", page.title())
+            print(
+                "HTTP status:",
+                response.status if response else "brak odpowiedzi",
+            )
+            print("Końcowy URL:", page.url)
+            print("Tytuł strony:", page.title())
 
-# Dajemy stronie czas na uruchomienie JavaScriptu i AJAX.
-page.wait_for_timeout(10000)
+            # Dajemy stronie czas na załadowanie JS/AJAX.
+            page.wait_for_timeout(10000)
 
-# Diagnostyka musi zostać zapisana przed sprawdzaniem grafiku.
-page.screenshot(
-    path=str(SCREENSHOT_FILE),
-    full_page=True,
-)
+            # Zapisujemy diagnostykę zanim zaczniemy analizować grafik.
+            page.screenshot(
+                path=str(SCREENSHOT_FILE),
+                full_page=True,
+            )
 
-HTML_FILE.write_text(
-    page.content(),
-    encoding="utf-8",
-)
+            HTML_FILE.write_text(
+                page.content(),
+                encoding="utf-8",
+            )
 
-body_text = page.locator("body").inner_text()
-print("Początek treści strony:")
-print(body_text[:3000])
+            body_text = page.locator("body").inner_text()
 
-if "BAD.2" not in body_text:
-    raise RuntimeError(
-        "Strona otworzyła się, ale GitHub Runner nie otrzymał "
-        "grafiku kortów. Sprawdź ganador-status.png oraz "
-        "ganador-page.html w artefaktach workflow."
-    )
+            print("Początek treści strony:")
+            print(body_text[:3000])
 
-page.get_by_text(
-    REFERENCE_COURT,
-    exact=True,
-).first.wait_for(
-    state="attached",
-    timeout=10000,
-)
+            # Najpierw sprawdzamy, czy runner w ogóle dostał grafik.
+            if REFERENCE_COURT not in body_text:
+                raise RuntimeError(
+                    "Strona otworzyła się, ale GitHub Runner nie otrzymał "
+                    "grafiku kortów. Sprawdź ganador-status.png oraz "
+                    "ganador-page.html w artefaktach workflow."
+                )
 
-        # Znajdź tabelę zawierającą grafik badmintonowy.
-        table = find_schedule_table(page)
-        rows = table.locator("tr")
+            # Wystarczy, że element znajduje się w DOM.
+            page.get_by_text(
+                REFERENCE_COURT,
+                exact=True,
+            ).first.wait_for(
+                state="attached",
+                timeout=10000,
+            )
 
-        print(f"Znaleziono wierszy tabeli: {rows.count()}")
+            # Znajdź tabelę zawierającą grafik badmintonowy.
+            table = find_schedule_table(page)
+            rows = table.locator("tr")
 
-        # Ustal kolumnę 20:00 oraz kolumnę referencyjną 22:00.
-        target_column = find_time_column(rows, TARGET_TIME)
-        reference_column = find_time_column(rows, REFERENCE_TIME)
+            print(f"Znaleziono wierszy tabeli: {rows.count()}")
 
-        print(
-            f"Kolumna {TARGET_TIME}: {target_column}, "
-            f"kolumna referencyjna {REFERENCE_TIME}: "
-            f"{reference_column}"
-        )
+            # Ustal kolumnę kontrolowanej godziny.
+            target_column = find_time_column(
+                rows,
+                TARGET_TIME,
+            )
 
-        # Pobierz referencyjny slot BAD.2 o 22:00.
-        reference_cell = find_court_cell(
-            rows,
-            REFERENCE_COURT,
-            reference_column,
-        )
+            # Ustal kolumnę slotu referencyjnego.
+            reference_column = find_time_column(
+                rows,
+                REFERENCE_TIME,
+            )
 
-        reference_data = get_cell_data(reference_cell)
+            print(
+                f"Kolumna {TARGET_TIME}: {target_column}, "
+                f"kolumna referencyjna {REFERENCE_TIME}: "
+                f"{reference_column}"
+            )
 
-        print(
-            f"Slot referencyjny "
-            f"{REFERENCE_COURT} {REFERENCE_TIME}: "
-            f"{reference_data}"
-        )
+            # Pobierz komórkę referencyjną.
+            reference_cell = find_court_cell(
+                rows,
+                REFERENCE_COURT,
+                reference_column,
+            )
 
-        available_courts = []
+            reference_data = get_cell_data(
+                reference_cell
+            )
 
-        for court_name in COURTS:
+            print(
+                f"Slot referencyjny "
+                f"{REFERENCE_COURT} {REFERENCE_TIME}: "
+                f"{reference_data}"
+            )
+
+            available_courts = []
+
+            # Sprawdź wszystkie korty o TARGET_TIME.
+            for court_name in COURTS:
+                try:
+                    cell = find_court_cell(
+                        rows,
+                        court_name,
+                        target_column,
+                    )
+
+                    cell_data = get_cell_data(
+                        cell
+                    )
+
+                    is_available = looks_like_reference(
+                        cell_data,
+                        reference_data,
+                    )
+
+                    if is_available:
+                        status = "WOLNY"
+                        available_courts.append(
+                            court_name
+                        )
+                    else:
+                        status = "ZAJETY"
+
+                    print(
+                        f"{court_name} o {TARGET_TIME}: "
+                        f"{status}; "
+                        f"dane={cell_data}"
+                    )
+
+                except Exception as error:
+                    print(
+                        f"UWAGA: nie udało się sprawdzić "
+                        f"{court_name}: {error}"
+                    )
+
+            print(
+                f"Dostępne korty o {TARGET_TIME}: "
+                f"{available_courts}"
+            )
+
+            return available_courts
+
+        except Exception as error:
+            print(
+                f"BŁĄD podczas sprawdzania Ganadora: {error}"
+            )
+
+            # Spróbuj zapisać diagnostykę również przy błędzie.
             try:
-                cell = find_court_cell(
-                    rows,
-                    court_name,
-                    target_column,
+                page.screenshot(
+                    path=str(SCREENSHOT_FILE),
+                    full_page=True,
                 )
 
-                cell_data = get_cell_data(cell)
-
-                is_available = looks_like_reference(
-                    cell_data,
-                    reference_data,
+                HTML_FILE.write_text(
+                    page.content(),
+                    encoding="utf-8",
                 )
-
-                if is_available:
-                    status = "🟢 WOLNY"
-                    available_courts.append(court_name)
-                else:
-                    status = "🔴 ZAJĘTY"
 
                 print(
-                    f"{court_name} o {TARGET_TIME}: "
-                    f"{status} "
-                    f"[class={cell_data['className']}]"
+                    f"Zapisano screenshot: {SCREENSHOT_FILE}"
                 )
-
-            except Exception as error:
                 print(
-                    f"UWAGA: nie udało się sprawdzić "
-                    f"{court_name}: {error}"
+                    f"Zapisano HTML: {HTML_FILE}"
                 )
 
-        browser.close()
+            except Exception as diagnostic_error:
+                print(
+                    "Nie udało się zapisać diagnostyki:",
+                    diagnostic_error,
+                )
 
-        return available_courts
+            raise
 
+        finally:
+            browser.close()
 
 def main():
     previous_state = load_previous_state()
