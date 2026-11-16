@@ -1,507 +1,133 @@
-import json
-import os
-import re
-import smtplib
-import sys
-from datetime import datetime
-from email.message import EmailMessage
-from pathlib import Path
-from zoneinfo import ZoneInfo
-
 from playwright.sync_api import sync_playwright
-
-
-URL = (
-    "https://ganadorsport.pl/rezerwacja-online/"
-    "index.php?s=grafik_zajec_korty_badminton&date=2026-11-19"
-)
-
-TARGET_TIME = "20:00"
-REFERENCE_COURT = "BAD.2"
-REFERENCE_TIME = "22:00"
-COURTS = ["BAD.1", "BAD.2", "BAD.3", "BAD.4", "BAD.5"]
-
-STATE_FILE = Path("state.json")
-SCREENSHOT_FILE = Path("ganador-status.png")
-HTML_FILE = Path("ganador-page.html")
+from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
-
-def normalize_text(value):
-    if value is None:
-        return ""
-
-    value = value.replace("\xa0", " ")
-    value = re.sub(r"\s+", " ", value)
-
-    return value.strip().upper()
+TARGET_TIME = "20:00"
+COURTS = ["BAD.1", "BAD.2", "BAD.3", "BAD.4", "BAD.5"]
 
 
-def load_previous_state():
-    if not STATE_FILE.exists():
-        return {
-            "available_courts": [],
-            "last_check": None
-        }
-
-    try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {
-            "available_courts": [],
-            "last_check": None
-        }
-
-
-def save_state(available_courts):
-    state = {
-        "available_courts": available_courts,
-        "last_check": datetime.now(WARSAW_TZ).isoformat()
-    }
-
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False),
-        encoding="utf-8"
+def build_url(target_date):
+    return (
+        "https://ganadorsport.pl/rezerwacja-online/"
+        "index.php?s=grafik_zajec_korty_badminton"
+        f"&date={target_date.isoformat()}"
     )
 
 
-def send_email(available_courts):
-    smtp_host = os.environ.get("SMTP_HOST")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_username = os.environ.get("SMTP_USERNAME")
-    smtp_password = os.environ.get("SMTP_PASSWORD")
-    email_from = os.environ.get("EMAIL_FROM", smtp_username)
-    email_to = os.environ.get("EMAIL_TO")
+def check_day(page, target_date):
+    url = build_url(target_date)
 
-    missing = []
+    print(f"\nSprawdzam: {target_date}")
+    print(f"URL: {url}")
 
-    for name, value in [
-        ("SMTP_HOST", smtp_host),
-        ("SMTP_USERNAME", smtp_username),
-        ("SMTP_PASSWORD", smtp_password),
-        ("EMAIL_TO", email_to),
-    ]:
-        if not value:
-            missing.append(name)
-
-    if missing:
-        raise RuntimeError(
-            "Brakuje konfiguracji SMTP: " + ", ".join(missing)
-        )
-
-    now = datetime.now(WARSAW_TZ)
-    courts_text = ", ".join(available_courts)
-
-    message = EmailMessage()
-    message["Subject"] = (
-        f"🏸 Wolny kort Ganador: {courts_text}, 09.11.2026 o 20:00"
-    )
-    message["From"] = email_from
-    message["To"] = email_to
-
-    message.set_content(
-        f"""Dostępny jest kort do badmintona w Ganador Sport.
-
-Data: 09.11.2026
-Godzina: 20:00
-Wolne korty: {courts_text}
-Sprawdzono: {now.strftime("%d.%m.%Y %H:%M:%S")}
-
-Rezerwacja:
-{URL}
-
-Wiadomość została wysłana automatycznie po zmianie statusu kortu z zajętego na wolny.
-"""
+    response = page.goto(
+        url,
+        wait_until="domcontentloaded",
+        timeout=60000,
     )
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.ehlo()
-        smtp.login(smtp_username, smtp_password)
-        smtp.send_message(message)
+    if response:
+        print(f"HTTP: {response.status}")
 
-    print(f"Wysłano e-mail: {courts_text}")
+        if response.status == 403:
+            raise RuntimeError(
+                "Ganador zwrócił HTTP 403. "
+                "GitHub Runner może być blokowany."
+            )
 
+    page.wait_for_timeout(2000)
 
-def get_cell_data(cell):
-    return cell.evaluate(
-        """
-        element => {
-            const style = window.getComputedStyle(element);
-            const link = element.querySelector("a");
+    # Diagnostyka: pokaż tekst strony
+    text = page.locator("body").inner_text()
 
-            return {
-                text: (element.innerText || "").trim(),
-                className: element.className || "",
-                backgroundColor: style.backgroundColor || "",
-                color: style.color || "",
-                cursor: style.cursor || "",
-                href: link ? link.href : "",
-                onclick:
-                    element.getAttribute("onclick") ||
-                    (link ? link.getAttribute("onclick") : "") ||
-                    "",
-                title:
-                    element.getAttribute("title") ||
-                    (link ? link.getAttribute("title") : "") ||
-                    "",
-                ariaLabel:
-                    element.getAttribute("aria-label") ||
-                    (link ? link.getAttribute("aria-label") : "") ||
-                    "",
-                hasLink: Boolean(link)
-            };
-        }
-        """
-    )
+    print("--- fragment strony ---")
+    print(text[:3000])
+    print("-----------------------")
 
+    available = []
 
-def find_schedule_table(page):
-    tables = page.locator("table")
+    # Szukamy wiersza każdego kortu
+    for court in COURTS:
 
-    for table_number in range(tables.count()):
-        table = tables.nth(table_number)
-        text = normalize_text(table.inner_text())
+        court_locator = page.get_by_text(court, exact=True)
 
-        if "BAD.2" in text and "20:00" in text and "22:00" in text:
-            return table
-
-    raise RuntimeError(
-        "Nie znaleziono tabeli zawierającej korty BAD.2 oraz godziny "
-        "20:00 i 22:00."
-    )
-
-
-def find_time_column(rows, target_time):
-    target = normalize_text(target_time)
-
-    for row_number in range(rows.count()):
-        cells = rows.nth(row_number).locator("th, td")
-
-        for column_number in range(cells.count()):
-            cell_text = normalize_text(cells.nth(column_number).inner_text())
-
-            if cell_text == target:
-                return column_number
-
-    raise RuntimeError(
-        f"Nie znaleziono kolumny dla godziny {target_time}."
-    )
-
-
-def find_court_cell(rows, court_name, column_number):
-    expected = normalize_text(court_name)
-
-    for row_number in range(rows.count()):
-        cells = rows.nth(row_number).locator("th, td")
-
-        if cells.count() <= column_number:
+        if court_locator.count() == 0:
+            print(f"{court}: nie znaleziono")
             continue
 
-        row_values = [
-            normalize_text(cells.nth(i).inner_text())
-            for i in range(cells.count())
-        ]
+        court_element = court_locator.first
 
-        if expected in row_values:
-            return cells.nth(column_number)
+        # znajdujemy najbliższy wiersz tabeli
+        row = court_element.locator("xpath=ancestor::tr[1]")
 
-    raise RuntimeError(
-        f"Nie znaleziono wiersza kortu {court_name}."
-    )
+        if row.count() == 0:
+            print(f"{court}: brak wiersza TR")
+            continue
+
+        cells = row.locator("td")
+
+        print(
+            f"{court}: znaleziono wiersz, "
+            f"liczba komórek={cells.count()}"
+        )
+
+        # tymczasowo wypisz wszystkie komórki
+        for i in range(cells.count()):
+            cell = cells.nth(i)
+
+            try:
+                value = cell.inner_text().strip()
+            except:
+                value = ""
+
+            classes = cell.get_attribute("class") or ""
+
+            print(
+                f"  [{i}] text={value!r} "
+                f"class={classes!r}"
+            )
+
+    return available
 
 
-def looks_like_reference(candidate, reference):
-    candidate_text = " ".join(
-        [
-            candidate.get("text", ""),
-            candidate.get("className", ""),
-            candidate.get("title", ""),
-            candidate.get("ariaLabel", ""),
-            candidate.get("onclick", ""),
-            candidate.get("href", ""),
-        ]
-    ).lower()
+def main():
+    # na początek testujemy konkretnie 19 listopada
+    target_date = date(2026, 11, 19)
 
-    unavailable_words = [
-        "zajęty",
-        "zajety",
-        "occupied",
-        "unavailable",
-        "niedostępny",
-        "niedostepny",
-        "brak miejsc",
-        "reserved",
-        "rezerwacja zamknięta",
-        "rezerwacja zamknieta",
-    ]
+    with sync_playwright() as p:
 
-    if any(word in candidate_text for word in unavailable_words):
-        return False
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-dev-shm-usage"],
+        )
 
-    available_words = [
-        "wolny",
-        "dostępny",
-        "dostepny",
-        "available",
-        "rezerwuj",
-        "zarezerwuj",
-    ]
-
-    if any(word in candidate_text for word in available_words):
-        return True
-
-    if reference["hasLink"] and candidate["hasLink"]:
-        return True
-
-    if reference["onclick"] and candidate["onclick"]:
-        return True
-
-    reference_classes = set(reference["className"].lower().split())
-    candidate_classes = set(candidate["className"].lower().split())
-
-    meaningful_reference_classes = {
-        value
-        for value in reference_classes
-        if value not in {"", "td", "cell", "slot"}
-    }
-
-    if (
-        meaningful_reference_classes
-        and meaningful_reference_classes.intersection(candidate_classes)
-    ):
-        return True
-
-    if (
-        reference["backgroundColor"]
-        and candidate["backgroundColor"] == reference["backgroundColor"]
-    ):
-        return True
-
-    return False
-
-def check_availability():
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-
-        page = browser.new_page(
+        context = browser.new_context(
             viewport={"width": 1600, "height": 1200},
             locale="pl-PL",
             timezone_id="Europe/Warsaw",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/141.0.0.0 Safari/537.36"
+            ),
         )
 
-        print(f"Otwieram stronę: {URL}")
+        page = context.new_page()
 
         try:
-            response = page.goto(
-                URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
+            check_day(page, target_date)
 
-            print(
-                "HTTP status:",
-                response.status if response else "brak odpowiedzi",
-            )
-            print("Końcowy URL:", page.url)
-            print("Tytuł strony:", page.title())
-
-            # Dajemy stronie czas na załadowanie JS/AJAX.
-            page.wait_for_timeout(10000)
-
-            # Zapisujemy diagnostykę zanim zaczniemy analizować grafik.
             page.screenshot(
-                path=str(SCREENSHOT_FILE),
+                path="ganador-debug.png",
                 full_page=True,
             )
 
-            HTML_FILE.write_text(
-                page.content(),
-                encoding="utf-8",
-            )
-
-            body_text = page.locator("body").inner_text()
-
-            print("Początek treści strony:")
-            print(body_text[:3000])
-
-            # Najpierw sprawdzamy, czy runner w ogóle dostał grafik.
-            if REFERENCE_COURT not in body_text:
-                raise RuntimeError(
-                    "Strona otworzyła się, ale GitHub Runner nie otrzymał "
-                    "grafiku kortów. Sprawdź ganador-status.png oraz "
-                    "ganador-page.html w artefaktach workflow."
-                )
-
-            # Wystarczy, że element znajduje się w DOM.
-            page.get_by_text(
-                REFERENCE_COURT,
-                exact=True,
-            ).first.wait_for(
-                state="attached",
-                timeout=10000,
-            )
-
-            # Znajdź tabelę zawierającą grafik badmintonowy.
-            table = find_schedule_table(page)
-            rows = table.locator("tr")
-
-            print(f"Znaleziono wierszy tabeli: {rows.count()}")
-
-            # Ustal kolumnę kontrolowanej godziny.
-            target_column = find_time_column(
-                rows,
-                TARGET_TIME,
-            )
-
-            # Ustal kolumnę slotu referencyjnego.
-            reference_column = find_time_column(
-                rows,
-                REFERENCE_TIME,
-            )
-
-            print(
-                f"Kolumna {TARGET_TIME}: {target_column}, "
-                f"kolumna referencyjna {REFERENCE_TIME}: "
-                f"{reference_column}"
-            )
-
-            # Pobierz komórkę referencyjną.
-            reference_cell = find_court_cell(
-                rows,
-                REFERENCE_COURT,
-                reference_column,
-            )
-
-            reference_data = get_cell_data(
-                reference_cell
-            )
-
-            print(
-                f"Slot referencyjny "
-                f"{REFERENCE_COURT} {REFERENCE_TIME}: "
-                f"{reference_data}"
-            )
-
-            available_courts = []
-
-            # Sprawdź wszystkie korty o TARGET_TIME.
-            for court_name in COURTS:
-                try:
-                    cell = find_court_cell(
-                        rows,
-                        court_name,
-                        target_column,
-                    )
-
-                    cell_data = get_cell_data(
-                        cell
-                    )
-
-                    is_available = looks_like_reference(
-                        cell_data,
-                        reference_data,
-                    )
-
-                    if is_available:
-                        status = "WOLNY"
-                        available_courts.append(
-                            court_name
-                        )
-                    else:
-                        status = "ZAJETY"
-
-                    print(
-                        f"{court_name} o {TARGET_TIME}: "
-                        f"{status}; "
-                        f"dane={cell_data}"
-                    )
-
-                except Exception as error:
-                    print(
-                        f"UWAGA: nie udało się sprawdzić "
-                        f"{court_name}: {error}"
-                    )
-
-            print(
-                f"Dostępne korty o {TARGET_TIME}: "
-                f"{available_courts}"
-            )
-
-            return available_courts
-
-        except Exception as error:
-            print(
-                f"BŁĄD podczas sprawdzania Ganadora: {error}"
-            )
-
-            # Spróbuj zapisać diagnostykę również przy błędzie.
-            try:
-                page.screenshot(
-                    path=str(SCREENSHOT_FILE),
-                    full_page=True,
-                )
-
-                HTML_FILE.write_text(
-                    page.content(),
-                    encoding="utf-8",
-                )
-
-                print(
-                    f"Zapisano screenshot: {SCREENSHOT_FILE}"
-                )
-                print(
-                    f"Zapisano HTML: {HTML_FILE}"
-                )
-
-            except Exception as diagnostic_error:
-                print(
-                    "Nie udało się zapisać diagnostyki:",
-                    diagnostic_error,
-                )
-
-            raise
-
         finally:
+            context.close()
             browser.close()
-
-def main():
-    previous_state = load_previous_state()
-    previous_available = set(
-        previous_state.get("available_courts", [])
-    )
-
-    print(
-        "Poprzednio dostępne korty:",
-        sorted(previous_available)
-    )
-
-    current_available = check_availability()
-    current_available_set = set(current_available)
-
-    newly_available = sorted(
-        current_available_set - previous_available
-    )
-
-    print("Obecnie dostępne:", sorted(current_available_set))
-    print("Nowo dostępne:", newly_available)
-
-    save_state(sorted(current_available_set))
-
-    if newly_available:
-        send_email(newly_available)
-    else:
-        print(
-            "Brak zmiany 🔴→🟢. "
-            "E-mail nie zostanie wysłany."
-        )
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print(f"BŁĄD: {error}", file=sys.stderr)
-        raise
+    main()
