@@ -322,7 +322,7 @@ def check_availability(
             for index, court in enumerate(COURTS):
                 row = rows.nth(index)
 
-                slot =r(
+                slot =row.locator(
                     ".i-table-h-event-body"
                     f'[data-start="{TARGET_MINUTES}"]'
                 )
