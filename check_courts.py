@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 URL = (
     "https://ganadorsport.pl/rezerwacja-online/"
-    "index.php?s=grafik_zajec_korty_badminton&date=2026-11-09"
+    "index.php?s=grafik_zajec_korty_badminton&date=2026-11-19"
 )
 
 TARGET_TIME = "20:00"
