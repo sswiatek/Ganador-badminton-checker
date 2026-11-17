@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://ganadorsport.pl/rezerwacja-online/"
 
-TARGET_TIME = "20:00"
+TARGET_TIME = "19:00"
 TARGET_MINUTES = 20 * 60  # 1200
 
 COURTS = [
