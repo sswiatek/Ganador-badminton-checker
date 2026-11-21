@@ -35,7 +35,7 @@ def get_target_date() -> date:
     W GitHub Actions można ustawić:
     TARGET_DATE=2026-11-19
     """
-    raw_date = os.getenv("TARGET_DATE", "2026-11-19").strip()
+    raw_date = os.getenv("TARGET_DATE", "2026-11-25").strip()
 
     try:
         return date.fromisoformat(raw_date)
