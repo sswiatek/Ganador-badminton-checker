@@ -474,7 +474,7 @@ def check_availability(
                             booking_links[
                                 target_time
                             ][court] = urljoin(
-                                BASE_URL                       data_link,
+                                BASE_URL,                      data_link,
                             )
 
                     elif "red" in classes:
