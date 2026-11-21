@@ -2,6 +2,7 @@ import json
 import os
 import smtplib
 import ssl
+
 from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
@@ -12,8 +13,12 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://ganadorsport.pl/rezerwacja-online/"
 
-TARGET_TIME = "20:00"
-TARGET_MINUTES = 20 * 60  # 1200
+# Godziny, które mają być sprawdzane.
+# Wartość to liczba minut od północy używana przez Ganador w data-start.
+TARGET_TIMES = {
+    "20:00": 20 * 60,  # 1200
+    "21:00": 21 * 60,  # 1260
+}
 
 COURTS = [
     "BAD.1",
@@ -33,7 +38,7 @@ def get_target_date() -> date:
     Data sprawdzana przez skrypt.
 
     W GitHub Actions można ustawić:
-    TARGET_DATE=2026-11-19
+    TARGET_DATE=2026-11-25
     """
     raw_date = os.getenv("TARGET_DATE", "2026-11-25").strip()
 
@@ -59,25 +64,29 @@ def load_previous_state() -> dict:
         return {}
 
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(
+            STATE_FILE.read_text(encoding="utf-8")
+        )
 
         if isinstance(data, dict):
             return data
 
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"OSTRZEŻENIE: nie można odczytać state.json: {exc}")
+        print(
+            f"OSTRZEŻENIE: nie można odczytać state.json: {exc}"
+        )
 
     return {}
 
 
 def save_state(
     target_date: date,
-    available_courts: list[str],
+    availability: dict[str, list[str]],
 ) -> None:
+
     state = {
         "date": target_date.isoformat(),
-        "time": TARGET_TIME,
-        "available_courts": available_courts,
+        "availability": availability,
     }
 
     STATE_FILE.write_text(
@@ -95,8 +104,10 @@ def save_state(
 def split_recipients(value: str) -> list[str]:
     """
     Pozwala używać przecinków lub średników:
+
     EMAIL_TO=a@example.com;b@example.com
     """
+
     return [
         item.strip()
         for item in value.replace(";", ",").split(",")
@@ -106,9 +117,10 @@ def split_recipients(value: str) -> list[str]:
 
 def send_email(
     target_date: date,
-    available_courts: list[str],
-    booking_links: dict[str, str],
+    new_availability: dict[str, list[str]],
+    booking_links: dict[str, dict[str, str]],
 ) -> None:
+
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     smtp_username = os.getenv("SMTP_USERNAME", "").strip()
@@ -146,63 +158,114 @@ def send_email(
             + ", ".join(missing)
         )
 
-    courts_text = ", ".join(available_courts)
-
     lines = [
         "Pojawiła się dostępność kortu w Ganadorze.",
         "",
         f"Data: {target_date.isoformat()}",
-        f"Godzina: {TARGET_TIME}",
-        f"Wolne korty: {courts_text}",
         "",
-        "Linki do rezerwacji:",
     ]
 
-    for court in available_courts:
-        link = booking_links.get(court)
+    for target_time in TARGET_TIMES:
 
-        if link:
-            lines.append(f"- {court}: {link}")
-        else:
-            lines.append(f"- {court}")
+        courts = new_availability.get(
+            target_time,
+            [],
+        )
+
+        if not courts:
+            continue
+
+        lines.append(
+            f"Godzina: {target_time}"
+        )
+
+        lines.append(
+            "Wolne korty: " + ", ".join(courts)
+        )
+
+        lines.append("")
+        lines.append("Linki do rezerwacji:")
+
+        for court in courts:
+
+            link = booking_links.get(
+                target_time,
+                {},
+            ).get(court)
+
+            if link:
+                lines.append(
+                    f"- {court}: {link}"
+                )
+            else:
+                lines.append(
+                    f"- {court}"
+                )
+
+        lines.append("")
+
+    available_times = [
+        target_time
+        for target_time, courts
+        in new_availability.items()
+        if courts
+    ]
+
+    times_text = ", ".join(available_times)
 
     message = EmailMessage()
+
     message["Subject"] = (
-        f"Ganador: wolny kort o {TARGET_TIME} "
-        f"({target_date.isoformat()})"
+        f"Ganador: wolny kort "
+        f"({target_date.isoformat()}, {times_text})"
     )
+
     message["From"] = email_from
     message["To"] = ", ".join(recipients)
-    message.set_content("\n".join(lines))
+
+    message.set_content(
+        "\n".join(lines)
+    )
 
     context = ssl.create_default_context()
 
     if smtp_port == 465:
+
         with smtplib.SMTP_SSL(
             smtp_host,
             smtp_port,
             context=context,
             timeout=30,
         ) as server:
+
             server.login(
                 smtp_username,
                 smtp_password,
             )
+
             server.send_message(message)
 
     else:
+
         with smtplib.SMTP(
             smtp_host,
             smtp_port,
             timeout=30,
         ) as server:
+
             server.ehlo()
-            server.starttls(context=context)
+
+            server.starttls(
+                context=context
+            )
+
             server.ehlo()
+
             server.login(
                 smtp_username,
                 smtp_password,
             )
+
             server.send_message(message)
 
     print(
@@ -212,37 +275,73 @@ def send_email(
 
 
 def save_diagnostics(page) -> None:
+
     try:
         page.screenshot(
             path=str(SCREENSHOT_FILE),
             full_page=True,
         )
-        print(f"Zapisano screenshot: {SCREENSHOT_FILE}")
+
+        print(
+            f"Zapisano screenshot: {SCREENSHOT_FILE}"
+        )
 
     except Exception as exc:
-        print(f"Nie udało się zapisać screenshotu: {exc}")
+
+        print(
+            f"Nie udało się zapisać screenshotu: {exc}"
+        )
 
     try:
+
         HTML_FILE.write_text(
             page.content(),
             encoding="utf-8",
         )
-        print(f"Zapisano HTML: {HTML_FILE}")
+
+        print(
+            f"Zapisano HTML: {HTML_FILE}"
+        )
 
     except Exception as exc:
-        print(f"Nie udało się zapisać HTML: {exc}")
+
+        print(
+            f"Nie udało się zapisać HTML: {exc}"
+        )
 
 
 def check_availability(
     target_date: date,
-) -> tuple[list[str], dict[str, str]]:
+) -> tuple[
+    dict[str, list[str]],
+    dict[str, dict[str, str]],
+]:
+
     url = build_schedule_url(target_date)
 
-    print(f"Sprawdzam datę: {target_date.isoformat()}")
-    print(f"Sprawdzam godzinę: {TARGET_TIME}")
+    print(
+        f"Sprawdzam datę: {target_date.isoformat()}"
+    )
+
+    print(
+        "Sprawdzam godziny: "
+        + ", ".join(TARGET_TIMES.keys())
+    )
+
     print(f"URL: {url}")
 
+    availability = {
+        target_time: []
+        for target_time in TARGET_TIMES
+    }
+
+    booking_links = {
+        target_time: {}
+        for target_time in TARGET_TIMES
+    }
+
     with sync_playwright() as playwright:
+
         browser = playwright.chromium.launch(
             headless=True,
             args=[
@@ -259,20 +358,22 @@ def check_availability(
             locale="pl-PL",
             timezone_id="Europe/Warsaw",
             user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
                 "Chrome/141.0.0.0 Safari/537.36"
             ),
             extra_http_headers={
-                "Accept-Language": (
-                    "pl-PL,pl;q=0.9,en;q=0.8"
-                ),
+                "Accept-Language":
+                    "pl-PL,pl;q=0.9,en;q=0.8",
             },
         )
 
         page = context.new_page()
 
         try:
+
             response = page.goto(
                 url,
                 wait_until="domcontentloaded",
@@ -284,8 +385,13 @@ def check_availability(
                     "Brak odpowiedzi HTTP ze strony Ganadora."
                 )
 
-            print(f"HTTP status: {response.status}")
-            print(f"Końcowy URL: {page.url}")
+            print(
+                f"HTTP status: {response.status}"
+            )
+
+            print(
+                f"Końcowy URL: {page.url}"
+            )
 
             if response.status == 403:
                 raise RuntimeError(
@@ -304,138 +410,210 @@ def check_availability(
                 timeout=30000,
             )
 
-            rows = page.locator(".i-table-h-event-row")
+            rows = page.locator(
+                ".i-table-h-event-row"
+            )
+
             row_count = rows.count()
 
-            print(f"Liczba znalezionych wierszy: {row_count}")
+            print(
+                f"Liczba znalezionych wierszy: {row_count}"
+            )
 
             if row_count < len(COURTS):
                 raise RuntimeError(
                     "Znaleziono zbyt mało wierszy kortów: "
-                    f"{row_count}. Oczekiwano co najmniej "
+                    f"{row_count}. "
+                    "Oczekiwano co najmniej "
                     f"{len(COURTS)}."
                 )
 
-            available_courts = []
-            booking_links = {}
-
+            # Sprawdzamy każdy kort.
             for index, court in enumerate(COURTS):
+
                 row = rows.nth(index)
 
-                slot =row.locator(
-                    ".i-table-h-event-body"
-                    f'[data-start="{TARGET_MINUTES}"]'
-                )
+                # Dla każdego kortu sprawdzamy obie godziny.
+                for target_time, target_minutes in TARGET_TIMES.items():
 
-                slot_count = slot.count()
-
-                if slot_count != 1:
-                    raise RuntimeError(
-                        f"{court}: znaleziono {slot_count} "
-                        f"elementów dla godziny {TARGET_TIME}; "
-                        "oczekiwano dokładnie jednego."
+                    slot = row.locator(
+                        ".i-table-h-event-body"
+                        f'[data-start="{target_minutes}"]'
                     )
 
-                slot = slot.first
+                    slot_count = slot.count()
 
-                classes = (
-                    slot.get_attribute("class") or ""
-                ).split()
-
-                data_link = (
-                    slot.get_attribute("data-link") or ""
-                ).strip()
-
-                if "green" in classes:
-                    status = "WOLNY"
-                    available_courts.append(court)
-
-                    if data_link:
-                        booking_links[court] = urljoin(
-                            BASE_URL,
-                            data_link,
+                    if slot_count != 1:
+                        raise RuntimeError(
+                            f"{court}: znaleziono "
+                            f"{slot_count} elementów "
+                            f"dla godziny {target_time}; "
+                            "oczekiwano dokładnie jednego."
                         )
 
-                elif "red" in classes:
-                    status = "zajęty"
+                    slot = slot.first
 
-                else:
-                    status = (
-                        "nieznany: "
-                        + " ".join(classes)
+                    classes = (
+                        slot.get_attribute("class") or ""
+                    ).split()
+
+                    data_link = (
+                        slot.get_attribute("data-link") or ""
+                    ).strip()
+
+                    if "green" in classes:
+
+                        status = "WOLNY"
+
+                        availability[
+                            target_time
+                        ].append(court)
+
+                        if data_link:
+
+                            booking_links[
+                                target_time
+                            ][court] = urljoin(
+                                BASE_URL                       data_link,
+                            )
+
+                    elif "red" in classes:
+
+                        status = "zajęty"
+
+                    else:
+
+                        status = (
+                            "nieznany: "
+                            + " ".join(classes)
+                        )
+
+                    print(
+                        f"{court} o {target_time}: {status}"
                     )
 
+            print("")
+            print("=== PODSUMOWANIE ===")
+
+            for target_time in TARGET_TIMES:
+
+                courts = availability[target_time]
+
                 print(
-                    f"{court} o {TARGET_TIME}: {status}"
+                    f"{target_time}: "
+                    + (
+                        ", ".join(courts)
+                        if courts
+                        else "brak wolnych kortów"
+                    )
                 )
 
-            print(
-                "Wolne korty: "
-                + (
-                    ", ".join(available_courts)
-                    if available_courts
-                    else "brak"
-                )
-            )
-
-            return available_courts, booking_links
+            return availability, booking_links
 
         except Exception:
+
             save_diagnostics(page)
             raise
 
         finally:
+
             context.close()
             browser.close()
 
 
 def main() -> None:
+
     target_date = get_target_date()
+
     previous_state = load_previous_state()
 
-    available_courts, booking_links = check_availability(
+    availability, booking_links = check_availability(
         target_date
     )
 
-    previous_available = (
-        previous_state.get("available_courts", [])
-        if (
-            previous_state.get("date")
-            == target_date.isoformat()
-            and previous_state.get("time")
-            == TARGET_TIME
+    # Jeżeli state.json pochodzi z innej daty,
+    # wcześniejsza dostępność nie jest brana pod uwagę.
+    if previous_state.get("date") == target_date.isoformat():
+
+        previous_availability = previous_state.get(
+            "availability",
+            {},
         )
-        else []
-    )
 
-    new_available = [
-        court
-        for court in available_courts
-        if court not in previous_available
-    ]
+    else:
 
-    print(
-        "Poprzednio dostępne: "
-        + (
-            ", ".join(previous_available)
-            if previous_available
-            else "brak"
+        previous_availability = {}
+
+    new_availability = {}
+
+    print("")
+    print("=== PORÓWNANIE ZE STATE.JSON ===")
+
+    for target_time in TARGET_TIMES:
+
+        current = availability.get(
+            target_time,
+            [],
         )
-    )
 
-    if new_available:
+        previous = previous_availability.get(
+            target_time,
+            [],
+        )
+
+        new_courts = [
+            court
+            for court in current
+            if court not in previous
+        ]
+
+        new_availability[
+            target_time
+        ] = new_courts
+
         print(
-            "Nowo dostępne korty: "
-            + ", ".join(new_available)
+            f"{target_time} - poprzednio dostępne: "
+            + (
+                ", ".join(previous)
+                if previous
+                else "brak"
+            )
         )
+
+        print(
+            f"{target_time} - obecnie dostępne: "
+            + (
+                ", ".join(current)
+                if current
+                else "brak"
+            )
+        )
+
+        print(
+            f"{target_time} - NOWO dostępne: "
+            + (
+                ", ".join(new_courts)
+                if new_courts
+                else "brak"
+            )
+        )
+
+    has_new_availability = any(
+        new_availability[target_time]
+        for target_time in TARGET_TIMES
+    )
+
+    if has_new_availability:
 
         send_email(
             target_date,
-            new_available,
+            new_availability,
             booking_links,
         )
 
     else:
+
+        print("")
         print(
             "Brak nowej dostępności. "
             "Powiadomienie nie zostanie wysłane."
@@ -443,7 +621,7 @@ def main() -> None:
 
     save_state(
         target_date,
-        available_courts,
+        availability,
     )
 
 
